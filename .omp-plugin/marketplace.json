@@ -1,0 +1,24 @@
+{
+  "name": "pi-graphite",
+  "owner": {
+    "name": "mcuste"
+  },
+  "metadata": {
+    "description": "Graphite stacked-branch tooling for Oh My Pi"
+  },
+  "plugins": [
+    {
+      "name": "pi-graphite",
+      "description": "One model-callable tool for Graphite stacked branches, with checked arguments and verified pre- and postconditions",
+      "category": "development",
+      "author": "mcuste",
+      "homepage": "https://github.com/mcuste/pi-graphite",
+      "tags": ["graphite", "git", "stacked-branches", "pull-requests"],
+      "source": {
+        "source": "github",
+        "repo": "mcuste/pi-graphite",
+        "ref": "main"
+      }
+    }
+  ]
+}

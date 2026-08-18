@@ -1,26 +1,44 @@
 {
   "name": "@mcuste/pi-graphite",
   "version": "0.1.0",
-  "description": "Safe, model-callable Graphite tools for Pi and Oh My Pi",
-  "type": "module",
-  "packageManager": "pnpm@10.29.2",
-  "exports": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "files": [
-    "dist"
-  ],
-  "publishConfig": {
-    "access": "public"
-  },
+  "description": "Graphite stacked-branch operations as one safe, model-callable tool for the Pi and Oh My Pi coding agents",
   "keywords": [
     "pi-package",
     "pi",
     "oh-my-pi",
+    "omp",
+    "extension",
     "graphite",
-    "extension"
+    "gt",
+    "git",
+    "stacked-branches",
+    "stacked-pull-requests"
   ],
+  "license": "MIT",
+  "author": "mcuste",
+  "homepage": "https://github.com/mcuste/pi-graphite#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mcuste/pi-graphite.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mcuste/pi-graphite/issues"
+  },
+  "type": "module",
+  "packageManager": "pnpm@10.29.2",
   "engines": {
     "node": ">=22"
+  },
+  "exports": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -36,8 +54,8 @@
     "test:integration": "pnpm build && PI_GRAPHITE_INTEGRATION=1 node --test test/integration.test.mjs",
     "prepack": "pnpm build"
   },
-  "dependencies": {
-    "typebox": "^1.3.15"
+  "peerDependencies": {
+    "typebox": "*"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.9",
@@ -45,6 +63,7 @@
     "@withgraphite/graphite-cli": "1.8.6",
     "knip": "6.32.2",
     "publint": "0.3.23",
+    "typebox": "^1.3.15",
     "typescript": "^7.0.2"
   },
   "knip": {
@@ -56,14 +75,14 @@
       "test/**/*.mjs"
     ]
   },
-  "omp": {
-    "extensions": [
-      "./dist/index.js"
-    ]
-  },
   "pi": {
     "extensions": [
-      "./dist/index.js"
+      "./src/index.ts"
+    ]
+  },
+  "omp": {
+    "extensions": [
+      "./src/index.ts"
     ]
   }
 }
