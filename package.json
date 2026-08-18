@@ -1,0 +1,67 @@
+{
+  "name": "@mcuste/pi-graphite",
+  "version": "0.1.0",
+  "description": "Safe, model-callable Graphite tools for Pi and Oh My Pi",
+  "type": "module",
+  "packageManager": "pnpm@10.29.2",
+  "exports": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "oh-my-pi",
+    "graphite",
+    "extension"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "pnpm quality && pnpm package:check && pnpm test && pnpm deadcode && pnpm security",
+    "deadcode": "knip",
+    "fix": "biome check --write .",
+    "format": "biome format --write .",
+    "lint": "biome lint .",
+    "package:check": "pnpm build && publint",
+    "quality": "biome check .",
+    "security": "pnpm audit --audit-level high",
+    "test": "node --test test/*.test.mjs",
+    "prepack": "pnpm build"
+  },
+  "dependencies": {
+    "typebox": "^1.3.15"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.9",
+    "@types/node": "^26.2.0",
+    "knip": "6.32.2",
+    "publint": "0.3.23",
+    "typescript": "^7.0.2"
+  },
+  "knip": {
+    "entry": [
+      "test/**/*.test.mjs"
+    ],
+    "project": [
+      "src/**/*.ts",
+      "test/**/*.mjs"
+    ]
+  },
+  "omp": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  }
+}

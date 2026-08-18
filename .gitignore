@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.host-test/
+test/.capability-*/
+test/.integration-*/
+*.tgz
