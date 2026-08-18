@@ -45,6 +45,8 @@ test("all tools preserve the expected stack in an isolated Graphite repository",
   assert.equal(cache.trunk, "main");
 
   await writeFile(join(sandbox, "one.txt"), "one\n");
+  await writeFile(join(sandbox, "base.txt"), "base\nunstaged\n");
+  await writeFile(join(sandbox, "untracked.txt"), "untracked\n");
   execute("git", ["add", "one.txt"], sandbox);
   const firstCreate = await tools
     .get("graphite_create")
@@ -56,6 +58,19 @@ test("all tools preserve the expected stack in an isolated Graphite repository",
       context,
     );
   const firstBranch = firstCreate.details.after.branch;
+  assert.equal(
+    execute("git", ["diff-tree", "--no-commit-id", "--name-only", "-r", firstBranch], sandbox),
+    "one.txt",
+  );
+  assert.equal(execute("git", ["show", `${firstBranch}:one.txt`], sandbox), "one");
+  assert.equal(execute("git", ["show", `${firstBranch}:base.txt`], sandbox), "base");
+  assert.equal(await readFile(join(sandbox, "base.txt"), "utf8"), "base\nunstaged\n");
+  assert.equal(await readFile(join(sandbox, "untracked.txt"), "utf8"), "untracked\n");
+  assert.equal(execute("git", ["status", "--short"], sandbox), "M base.txt\n?? untracked.txt");
+
+  await writeFile(join(sandbox, "base.txt"), "base\n");
+  await rm(join(sandbox, "untracked.txt"));
+  assert.equal(execute("git", ["status", "--short"], sandbox), "");
 
   await writeFile(join(sandbox, "two.txt"), "two\n");
   execute("git", ["add", "two.txt"], sandbox);
@@ -71,14 +86,41 @@ test("all tools preserve the expected stack in an isolated Graphite repository",
   const secondBranch = secondCreate.details.after.branch;
   assert.equal(execute("gt", ["parent", "--no-interactive"], sandbox), firstBranch);
 
-  await tools
-    .get("graphite_move")
-    .execute("move-two", { source: secondBranch, onto: "main" }, undefined, undefined, context);
-  assert.equal(execute("gt", ["parent", "--no-interactive"], sandbox), "main");
+  const originalChild = execute("git", ["rev-parse", secondBranch], sandbox);
+  const originalChildPatch = execute(
+    "git",
+    ["diff", `${originalChild}^`, originalChild, "--", "two.txt"],
+    sandbox,
+  );
+  execute("git", ["checkout", firstBranch], sandbox);
+  await writeFile(join(sandbox, "parent-later.txt"), "parent advanced\n");
+  execute("git", ["add", "parent-later.txt"], sandbox);
+  execute("git", ["commit", "-m", "Advance parent"], sandbox);
+  const advancedParent = execute("git", ["rev-parse", firstBranch], sandbox);
+  assert.notEqual(execute("git", ["rev-parse", `${secondBranch}^`], sandbox), advancedParent);
+  execute("git", ["checkout", secondBranch], sandbox);
 
   await tools
     .get("graphite_restack")
     .execute("restack-two", { branch: secondBranch }, undefined, undefined, context);
+
+  const restackedChild = execute("git", ["rev-parse", secondBranch], sandbox);
+  assert.notEqual(restackedChild, originalChild);
+  assert.equal(execute("git", ["rev-parse", `${secondBranch}^`], sandbox), advancedParent);
+  assert.equal(
+    execute("git", ["diff", `${restackedChild}^`, restackedChild, "--", "two.txt"], sandbox),
+    originalChildPatch,
+  );
+  assert.equal(
+    execute("git", ["show", `${secondBranch}:parent-later.txt`], sandbox),
+    "parent advanced",
+  );
+  assert.equal(execute("git", ["show", `${secondBranch}:two.txt`], sandbox), "two");
+
+  await tools
+    .get("graphite_move")
+    .execute("move-two", { source: secondBranch, onto: "main" }, undefined, undefined, context);
+  assert.equal(execute("gt", ["parent", "--no-interactive"], sandbox), "main");
 
   const stack = execute("gt", ["log", "--stack", "--no-interactive"], sandbox);
   assert.ok(stack.includes(secondBranch));

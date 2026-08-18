@@ -24,7 +24,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "check": "pnpm quality && pnpm package:check && pnpm test && pnpm deadcode && pnpm security",
+    "check": "pnpm quality && pnpm package:check && pnpm test && pnpm test:integration && pnpm deadcode && pnpm security",
     "deadcode": "knip",
     "fix": "biome check --write .",
     "format": "biome format --write .",
@@ -32,7 +32,8 @@
     "package:check": "pnpm build && publint",
     "quality": "biome check .",
     "security": "pnpm audit --audit-level high",
-    "test": "node --test test/*.test.mjs",
+    "test": "pnpm build && node --test test/*.test.mjs",
+    "test:integration": "pnpm build && PI_GRAPHITE_INTEGRATION=1 node --test test/integration.test.mjs",
     "prepack": "pnpm build"
   },
   "dependencies": {
@@ -41,6 +42,7 @@
   "devDependencies": {
     "@biomejs/biome": "2.5.9",
     "@types/node": "^26.2.0",
+    "@withgraphite/graphite-cli": "1.8.6",
     "knip": "6.32.2",
     "publint": "0.3.23",
     "typescript": "^7.0.2"

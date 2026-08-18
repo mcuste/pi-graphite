@@ -87,27 +87,25 @@ pnpm check
 ```
 
 It runs Biome formatting and lint checks, builds and validates the published package, executes the
-deterministic test suite, finds unused code and dependencies with Knip, and audits dependencies for
-high-severity advisories.
+deterministic suite and the real Git and Graphite integration suite, finds unused code and
+dependencies with Knip, and audits dependencies for high-severity advisories. CI runs the same gate
+with Graphite CLI 1.8.6 pinned in `devDependencies`.
 
 Use the focused commands while developing:
 
 ```bash
-pnpm fix            # Apply safe Biome formatting, import, and lint fixes
-pnpm quality        # Check formatting, imports, and lint rules
-pnpm deadcode       # Find unused files, exports, and dependencies
-pnpm package:check  # Build and validate the publishable package
-pnpm security       # Audit dependencies for high-severity advisories
+pnpm fix               # Apply safe Biome formatting, import, and lint fixes
+pnpm quality           # Check formatting, imports, and lint rules
+pnpm test              # Build, then run the deterministic suite
+pnpm test:integration  # Build, then run the real Git and Graphite scenario
+pnpm deadcode          # Find unused files, exports, and dependencies
+pnpm package:check     # Build and validate the publishable package
+pnpm security          # Audit dependencies for high-severity advisories
 ```
 
-The opt-in integration test requires Git and an initialized Graphite CLI:
-
-```bash
-PI_GRAPHITE_INTEGRATION=1 node --test test/integration.test.mjs
-```
-
-It creates an isolated Git repository, initializes Graphite, runs all four tools, and checks the
-resulting parentage and stack.
+The integration test creates an isolated Git repository, initializes Graphite, runs all four tools,
+and verifies staged-only creation, worktree preservation, parent divergence, restacking, moving,
+and the resulting stack.
 
 ## References
 

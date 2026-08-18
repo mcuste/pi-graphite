@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { GraphiteCapabilityResolver, GraphiteUnavailableError } from "../dist/capability.js";
@@ -115,4 +115,76 @@ test("detection preserves cancellation", async (t) => {
   });
 
   await assert.rejects(resolver.ensure(root), CommandCancelledError);
+});
+
+test("malformed and wrong-schema caches trigger detection and rewrite", async (t) => {
+  const cases = [
+    ["malformed", () => "{not-json\n"],
+    [
+      "wrong schema",
+      (root) =>
+        `${JSON.stringify({
+          schemaVersion: 0,
+          usesGraphite: true,
+          repositoryRoot: root,
+          gtVersion: "stale-version",
+          trunk: "stale-trunk",
+          verifiedAt: "2020-01-01T00:00:00.000Z",
+        })}\n`,
+    ],
+  ];
+
+  for (const [label, cacheContent] of cases) {
+    const { root, gitDir } = await createRepositoryFixture(t);
+    const cachePath = join(gitDir, "pi-graphite.json");
+    await writeFile(cachePath, cacheContent(root));
+    const calls = [];
+    const runner = async (command, args) => {
+      calls.push([command, ...args]);
+      if (command === "git") {
+        return { command, args, exitCode: 0, stdout: `${root}\n${gitDir}\n`, stderr: "" };
+      }
+      if (args[0] === "--version") {
+        return { command, args, exitCode: 0, stdout: "1.8.6\n", stderr: "" };
+      }
+      return { command, args, exitCode: 0, stdout: "main\n", stderr: "" };
+    };
+
+    const capability = await new GraphiteCapabilityResolver(runner).ensure(root);
+
+    assert.equal(capability.cache, "written", label);
+    assert.deepEqual(
+      calls.filter(([command]) => command === "gt"),
+      [
+        ["gt", "--version"],
+        ["gt", "trunk", "--no-interactive"],
+      ],
+      label,
+    );
+    const rewritten = JSON.parse(await readFile(cachePath, "utf8"));
+    assert.equal(rewritten.schemaVersion, 1, label);
+    assert.equal(rewritten.gtVersion, "1.8.6", label);
+    assert.equal(rewritten.trunk, "main", label);
+  }
+});
+
+test("cache write failure preserves successful capability detection", async (t) => {
+  const { root, gitDir } = await createRepositoryFixture(t);
+  await mkdir(join(gitDir, "pi-graphite.json"));
+  const runner = async (command, args) => {
+    if (command === "git") {
+      return { command, args, exitCode: 0, stdout: `${root}\n${gitDir}\n`, stderr: "" };
+    }
+    if (args[0] === "--version") {
+      return { command, args, exitCode: 0, stdout: "1.8.6\n", stderr: "" };
+    }
+    return { command, args, exitCode: 0, stdout: "main\n", stderr: "" };
+  };
+
+  const capability = await new GraphiteCapabilityResolver(runner).ensure(root);
+
+  assert.equal(capability.gtVersion, "1.8.6");
+  assert.equal(capability.trunk, "main");
+  assert.equal(capability.cache, "unavailable");
+  assert.match(capability.cacheWarning, /repository cache could not be written/u);
 });

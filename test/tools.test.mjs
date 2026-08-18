@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { CommandCancelledError } from "../dist/process.js";
 import { registerGraphiteTools } from "../dist/tools.js";
 
 const repositoryRoot = "/virtual/repository";
@@ -82,55 +83,85 @@ test("graphite_inspect maps each operation to a fixed argument array", async () 
       command,
       args,
       exitCode: 0,
-      stdout: "main\n",
+      stdout: "result\n",
       stderr: "",
     };
   });
   const inspect = tools.get("graphite_inspect");
+  const cases = [
+    ["stack", ["log", "--stack", "--no-interactive"]],
+    ["parent", ["parent", "--no-interactive"]],
+    ["trunk", ["trunk", "--no-interactive"]],
+  ];
 
-  const result = await inspect.execute("call-1", { operation: "parent" }, undefined, undefined, {
-    cwd: repositoryRoot,
-  });
+  for (const [operation, expectedArgs] of cases) {
+    calls.length = 0;
+    const result = await inspect.execute(
+      `inspect-${operation}`,
+      { operation },
+      undefined,
+      undefined,
+      { cwd: repositoryRoot },
+    );
 
-  assert.deepEqual(calls, [["gt", "parent", "--no-interactive"]]);
-  assert.equal(result.content[0].text, "main");
-  assert.equal(result.details.operation, "parent");
-  assert.equal(result.details.capability.cache, "persistent");
+    assert.deepEqual(calls, [["gt", ...expectedArgs]], operation);
+    assert.equal(result.content[0].text, "result");
+    assert.equal(result.details.operation, operation);
+    assert.equal(result.details.capability.cache, "persistent");
+  }
 });
 
-test("graphite_create validates input and commits only through fixed flags", async () => {
-  const { calls, runner } = createMutationRunner();
-  const tools = registerWith(runner);
-  const create = tools.get("graphite_create");
+test("mutation tools map each operation to a fixed argument array", async () => {
+  const cases = [
+    {
+      toolName: "graphite_restack",
+      parameters: { branch: "feature/child" },
+      expectedArgs: ["restack", "--branch", "feature/child", "--no-interactive"],
+    },
+    {
+      toolName: "graphite_create",
+      parameters: {
+        name: "feature/new",
+        subject: "Add child",
+        body: "Keep the change focused.",
+      },
+      expectedArgs: [
+        "create",
+        "feature/new",
+        "-m",
+        "Add child",
+        "-m",
+        "Keep the change focused.",
+        "--no-interactive",
+      ],
+    },
+    {
+      toolName: "graphite_move",
+      parameters: { source: "feature/child", onto: "main" },
+      expectedArgs: ["move", "--source", "feature/child", "--onto", "main", "--no-interactive"],
+    },
+  ];
 
-  const result = await create.execute(
-    "call-2",
-    { name: "feature/child", subject: "Add child", body: "Keep the change focused." },
-    undefined,
-    undefined,
-    { cwd: repositoryRoot },
-  );
+  for (const { toolName, parameters, expectedArgs } of cases) {
+    const { calls, runner } = createMutationRunner();
+    const tool = registerWith(runner).get(toolName);
+    const result = await tool.execute(`execute-${toolName}`, parameters, undefined, undefined, {
+      cwd: repositoryRoot,
+    });
 
-  assert.deepEqual(
-    calls.find(([command, operation]) => command === "gt" && operation === "create"),
-    [
-      "gt",
-      "create",
-      "feature/child",
-      "-m",
-      "Add child",
-      "-m",
-      "Keep the change focused.",
-      "--no-interactive",
-    ],
-  );
-  assert.equal(result.details.operation, "create");
-  assert.equal(result.details.before.branch, "current");
-  assert.equal(result.details.after.stack, "stack output");
-  assert.equal(
-    calls.filter(([command, operation]) => command === "gt" && operation === "log").length,
-    2,
-  );
+    assert.deepEqual(
+      calls.find(([command, operation]) => command === "gt" && operation === expectedArgs[0]),
+      ["gt", ...expectedArgs],
+      toolName,
+    );
+    assert.equal(result.details.operation, expectedArgs[0]);
+    assert.equal(result.details.before.branch, "current");
+    assert.equal(result.details.after.stack, "stack output");
+    assert.equal(
+      calls.filter(([command, operation]) => command === "gt" && operation === "log").length,
+      2,
+    );
+  }
 });
 
 test("history rewrites stop on a dirty worktree", async () => {
@@ -163,4 +194,214 @@ test("branch-like values cannot become Graphite options", async () => {
     /not a safe branch name/u,
   );
   assert.deepEqual(calls, []);
+});
+
+test("invalid Git refs are rejected before mutation commands run", async () => {
+  const cases = [
+    ["graphite_restack", { branch: "feature..child" }],
+    [
+      "graphite_create",
+      { name: "feature.lock", subject: "Add child", body: "Keep the change focused." },
+    ],
+    ["graphite_move", { source: "feature/child", onto: "bad ref" }],
+  ];
+
+  for (const [toolName, parameters] of cases) {
+    const calls = [];
+    const runner = async (command, args) => {
+      calls.push([command, ...args]);
+      const invalidRef =
+        command === "git" &&
+        args[0] === "check-ref-format" &&
+        ["feature..child", "feature.lock", "bad ref"].includes(args.at(-1));
+      return {
+        command,
+        args,
+        exitCode: invalidRef ? 1 : 0,
+        stdout: "",
+        stderr: invalidRef ? "invalid ref" : "",
+      };
+    };
+    const tool = registerWith(runner).get(toolName);
+
+    await assert.rejects(
+      tool.execute("invalid-ref", parameters, undefined, undefined, { cwd: repositoryRoot }),
+      /not a valid Git branch name/u,
+      toolName,
+    );
+    assert.equal(
+      calls.some(([command]) => command === "gt"),
+      false,
+      toolName,
+    );
+  }
+});
+
+test("whitespace and NUL commit messages are rejected before create runs", async () => {
+  const cases = [
+    [{ subject: " \t\n", body: "Valid body" }, /subject must contain non-whitespace/u],
+    [{ subject: "Bad\0subject", body: "Valid body" }, /subject must contain non-whitespace/u],
+    [{ subject: "Valid subject", body: " \t\n" }, /body must contain non-whitespace/u],
+    [{ subject: "Valid subject", body: "Bad\0body" }, /body must contain non-whitespace/u],
+  ];
+
+  for (const [message, expectedError] of cases) {
+    const { calls, runner } = createMutationRunner();
+    const create = registerWith(runner).get("graphite_create");
+
+    await assert.rejects(
+      create.execute(
+        "invalid-message",
+        { name: "feature/child", ...message },
+        undefined,
+        undefined,
+        { cwd: repositoryRoot },
+      ),
+      expectedError,
+    );
+    assert.equal(
+      calls.some(([command, operation]) => command === "gt" && operation === "create"),
+      false,
+    );
+  }
+});
+
+test("same-repository mutations execute serially", async () => {
+  const firstStarted = Promise.withResolvers();
+  const releaseFirst = Promise.withResolvers();
+  const secondValidated = Promise.withResolvers();
+  const starts = [];
+  const { runner: baseRunner } = createMutationRunner();
+  const runner = async (command, args, options) => {
+    if (command === "git" && args[0] === "check-ref-format" && args.at(-1) === "feature/two") {
+      secondValidated.resolve();
+    }
+    if (command === "gt" && args[0] === "create") {
+      starts.push(args[1]);
+      if (args[1] === "feature/one") {
+        firstStarted.resolve();
+        await releaseFirst.promise;
+      }
+    }
+    return baseRunner(command, args, options);
+  };
+  const create = registerWith(runner).get("graphite_create");
+  const executeCreate = (name) =>
+    create.execute(
+      `create-${name}`,
+      { name, subject: `Create ${name}`, body: "Create a serialized change." },
+      undefined,
+      undefined,
+      { cwd: repositoryRoot },
+    );
+
+  const first = executeCreate("feature/one");
+  await firstStarted.promise;
+  const second = executeCreate("feature/two");
+  await secondValidated.promise;
+  await Promise.resolve();
+  assert.deepEqual(starts, ["feature/one"]);
+
+  releaseFirst.resolve();
+  await Promise.all([first, second]);
+  assert.deepEqual(starts, ["feature/one", "feature/two"]);
+});
+
+test("cancellation prevents a queued mutation from starting", async () => {
+  const firstStarted = Promise.withResolvers();
+  const releaseFirst = Promise.withResolvers();
+  const secondValidated = Promise.withResolvers();
+  const starts = [];
+  const { runner: baseRunner } = createMutationRunner();
+  const runner = async (command, args, options) => {
+    if (command === "git" && args[0] === "check-ref-format" && args.at(-1) === "feature/two") {
+      secondValidated.resolve();
+    }
+    if (command === "gt" && args[0] === "create") {
+      starts.push(args[1]);
+      if (args[1] === "feature/one") {
+        firstStarted.resolve();
+        await releaseFirst.promise;
+      }
+    }
+    return baseRunner(command, args, options);
+  };
+  const create = registerWith(runner).get("graphite_create");
+  const executeCreate = (name, signal) =>
+    create.execute(
+      `create-${name}`,
+      { name, subject: `Create ${name}`, body: "Create a serialized change." },
+      signal,
+      undefined,
+      { cwd: repositoryRoot },
+    );
+
+  const first = executeCreate("feature/one");
+  await firstStarted.promise;
+  const controller = new AbortController();
+  const second = executeCreate("feature/two", controller.signal);
+  await secondValidated.promise;
+  controller.abort();
+  releaseFirst.resolve();
+
+  await first;
+  await assert.rejects(second, CommandCancelledError);
+  assert.deepEqual(starts, ["feature/one"]);
+});
+
+test("repository lock releases after a mutation failure", async () => {
+  const starts = [];
+  const { runner: baseRunner } = createMutationRunner();
+  const runner = async (command, args, options) => {
+    if (command === "gt" && args[0] === "create") {
+      starts.push(args[1]);
+      if (args[1] === "feature/fail") {
+        return { command, args, exitCode: 1, stdout: "", stderr: "create failed" };
+      }
+    }
+    return baseRunner(command, args, options);
+  };
+  const create = registerWith(runner).get("graphite_create");
+  const executeCreate = (name) =>
+    create.execute(
+      `create-${name}`,
+      { name, subject: `Create ${name}`, body: "Exercise lock release." },
+      undefined,
+      undefined,
+      { cwd: repositoryRoot },
+    );
+
+  await assert.rejects(executeCreate("feature/fail"), /Graphite create failed/u);
+  await executeCreate("feature/succeeds");
+  assert.deepEqual(starts, ["feature/fail", "feature/succeeds"]);
+});
+
+test("post-operation verification failure reports uncertain success", async () => {
+  let mutationCompleted = false;
+  const { calls, runner: baseRunner } = createMutationRunner();
+  const runner = async (command, args, options) => {
+    if (command === "gt" && args[0] === "create") {
+      mutationCompleted = true;
+    }
+    if (mutationCompleted && command === "git" && args[0] === "status") {
+      return { command, args, exitCode: 1, stdout: "", stderr: "status failed" };
+    }
+    return baseRunner(command, args, options);
+  };
+  const create = registerWith(runner).get("graphite_create");
+
+  await assert.rejects(
+    create.execute(
+      "uncertain-create",
+      { name: "feature/child", subject: "Add child", body: "Verify after mutation." },
+      undefined,
+      undefined,
+      { cwd: repositoryRoot },
+    ),
+    /Graphite create completed, but post-operation stack verification failed[\s\S]*before retrying/u,
+  );
+  assert.equal(
+    calls.filter(([command, operation]) => command === "gt" && operation === "create").length,
+    1,
+  );
 });
