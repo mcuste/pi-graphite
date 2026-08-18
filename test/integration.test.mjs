@@ -33,11 +33,20 @@ test("all tools preserve the expected stack in an isolated Graphite repository",
       tools.set(definition.name, definition);
     },
   });
-  const context = { cwd: sandbox };
+  const graphite = tools.get("graphite");
+  const context = {
+    cwd: sandbox,
+    ui: {
+      async confirm() {
+        return true;
+      },
+    },
+  };
+  let callId = 0;
+  const invoke = (parameters) =>
+    graphite.execute(`graphite-${++callId}`, parameters, undefined, undefined, context);
 
-  const trunk = await tools
-    .get("graphite_inspect")
-    .execute("inspect-trunk", { operation: "trunk" }, undefined, undefined, context);
+  const trunk = await invoke({ operation: "inspect", target: "trunk" });
   assert.equal(trunk.content[0].text, "main");
 
   const cache = JSON.parse(await readFile(join(sandbox, ".git", "pi-graphite.json"), "utf8"));
@@ -48,15 +57,12 @@ test("all tools preserve the expected stack in an isolated Graphite repository",
   await writeFile(join(sandbox, "base.txt"), "base\nunstaged\n");
   await writeFile(join(sandbox, "untracked.txt"), "untracked\n");
   execute("git", ["add", "one.txt"], sandbox);
-  const firstCreate = await tools
-    .get("graphite_create")
-    .execute(
-      "create-one",
-      { name: "feature/one", subject: "Add one", body: "Add the first stacked change." },
-      undefined,
-      undefined,
-      context,
-    );
+  const firstCreate = await invoke({
+    operation: "create",
+    name: "feature/one",
+    subject: "Add one",
+    body: "Add the first stacked change.",
+  });
   const firstBranch = firstCreate.details.after.branch;
   assert.equal(
     execute("git", ["diff-tree", "--no-commit-id", "--name-only", "-r", firstBranch], sandbox),
@@ -74,56 +80,173 @@ test("all tools preserve the expected stack in an isolated Graphite repository",
 
   await writeFile(join(sandbox, "two.txt"), "two\n");
   execute("git", ["add", "two.txt"], sandbox);
-  const secondCreate = await tools
-    .get("graphite_create")
-    .execute(
-      "create-two",
-      { name: "feature/two", subject: "Add two", body: "Add the second stacked change." },
-      undefined,
-      undefined,
-      context,
-    );
+  const secondCreate = await invoke({
+    operation: "create",
+    name: "feature/two",
+    subject: "Add two",
+    body: "Add the second stacked change.",
+  });
   const secondBranch = secondCreate.details.after.branch;
   assert.equal(execute("gt", ["parent", "--no-interactive"], sandbox), firstBranch);
 
+  await invoke({ operation: "checkout", branch: firstBranch });
+  assert.equal(execute("git", ["branch", "--show-current"], sandbox), firstBranch);
+  await invoke({ operation: "checkout", branch: secondBranch });
+  assert.equal(execute("git", ["branch", "--show-current"], sandbox), secondBranch);
+
+  const beforeAmend = execute("git", ["rev-parse", secondBranch], sandbox);
+  await writeFile(join(sandbox, "two.txt"), "two amended\n");
+  execute("git", ["add", "two.txt"], sandbox);
+  await invoke({ operation: "modify_amend" });
+  assert.notEqual(execute("git", ["rev-parse", secondBranch], sandbox), beforeAmend);
+  assert.equal(execute("git", ["show", `${secondBranch}:two.txt`], sandbox), "two amended");
+
+  await writeFile(join(sandbox, "follow-up.txt"), "follow-up\n");
+  execute("git", ["add", "follow-up.txt"], sandbox);
+  await invoke({
+    operation: "modify_commit",
+    subject: "Add follow-up",
+    body: "Exercise an additional commit on the branch.",
+  });
+  assert.equal(execute("git", ["show", `${secondBranch}:follow-up.txt`], sandbox), "follow-up");
+
+  const originalParent = execute("git", ["rev-parse", firstBranch], sandbox);
   const originalChild = execute("git", ["rev-parse", secondBranch], sandbox);
-  const originalChildPatch = execute(
-    "git",
-    ["diff", `${originalChild}^`, originalChild, "--", "two.txt"],
-    sandbox,
-  );
+  const originalChildPatch = execute("git", ["diff", originalParent, originalChild], sandbox);
   execute("git", ["checkout", firstBranch], sandbox);
   await writeFile(join(sandbox, "parent-later.txt"), "parent advanced\n");
   execute("git", ["add", "parent-later.txt"], sandbox);
   execute("git", ["commit", "-m", "Advance parent"], sandbox);
   const advancedParent = execute("git", ["rev-parse", firstBranch], sandbox);
-  assert.notEqual(execute("git", ["rev-parse", `${secondBranch}^`], sandbox), advancedParent);
+  assert.notEqual(
+    execute("git", ["merge-base", firstBranch, secondBranch], sandbox),
+    advancedParent,
+  );
   execute("git", ["checkout", secondBranch], sandbox);
 
-  await tools
-    .get("graphite_restack")
-    .execute("restack-two", { branch: secondBranch }, undefined, undefined, context);
+  await invoke({ operation: "restack", branch: secondBranch });
 
   const restackedChild = execute("git", ["rev-parse", secondBranch], sandbox);
   assert.notEqual(restackedChild, originalChild);
-  assert.equal(execute("git", ["rev-parse", `${secondBranch}^`], sandbox), advancedParent);
+  assert.equal(execute("git", ["merge-base", firstBranch, secondBranch], sandbox), advancedParent);
   assert.equal(
-    execute("git", ["diff", `${restackedChild}^`, restackedChild, "--", "two.txt"], sandbox),
+    execute("git", ["diff", advancedParent, restackedChild], sandbox),
     originalChildPatch,
   );
   assert.equal(
     execute("git", ["show", `${secondBranch}:parent-later.txt`], sandbox),
     "parent advanced",
   );
-  assert.equal(execute("git", ["show", `${secondBranch}:two.txt`], sandbox), "two");
+  assert.equal(execute("git", ["show", `${secondBranch}:two.txt`], sandbox), "two amended");
 
-  await tools
-    .get("graphite_move")
-    .execute("move-two", { source: secondBranch, onto: "main" }, undefined, undefined, context);
-  assert.equal(execute("gt", ["parent", "--no-interactive"], sandbox), "main");
+  await invoke({ operation: "move", source: secondBranch, onto: "main" });
+  const parent = await invoke({ operation: "inspect", target: "parent" });
+  assert.equal(parent.content[0].text, "main");
 
-  const stack = execute("gt", ["log", "--stack", "--no-interactive"], sandbox);
-  assert.ok(stack.includes(secondBranch));
-  assert.match(stack, /main/u);
+  const shortStack = await invoke({ operation: "inspect", target: "stack_short" });
+  assert.ok(shortStack.content[0].text.includes(secondBranch));
+  const state = await invoke({ operation: "inspect", target: "state" });
+  const trackedBranches = JSON.parse(state.content[0].text);
+  assert.equal(trackedBranches.main.trunk, true);
+  assert.deepEqual(
+    trackedBranches[secondBranch].parents.map((entry) => entry.ref),
+    ["main"],
+  );
+  const info = await invoke({ operation: "inspect", target: "info" });
+  assert.ok(info.content[0].text.includes(secondBranch));
+
+  await invoke({ operation: "checkout", branch: "main" });
+  const children = await invoke({ operation: "inspect", target: "children" });
+  assert.ok(children.content[0].text.includes(firstBranch));
+  assert.ok(children.content[0].text.includes(secondBranch));
+  await invoke({ operation: "checkout", branch: secondBranch });
+
+  assert.equal(execute("git", ["rev-list", "--count", `main..${secondBranch}`], sandbox), "2");
+  const squashedTree = execute("git", ["rev-parse", "HEAD^{tree}"], sandbox);
+  await invoke({
+    operation: "squash",
+    subject: "Add two with follow-up",
+    body: "- combine the branch into one commit",
+  });
+  assert.equal(execute("git", ["rev-list", "--count", "main..HEAD"], sandbox), "1");
+  assert.equal(execute("git", ["rev-parse", "HEAD^{tree}"], sandbox), squashedTree);
+  assert.equal(execute("git", ["log", "-1", "--format=%s"], sandbox), "Add two with follow-up");
+  assert.equal(
+    execute("git", ["log", "-1", "--format=%b"], sandbox),
+    "- combine the branch into one commit",
+  );
+
+  const renamed = await invoke({ operation: "rename", name: "feature/renamed" });
+  const renamedBranch = renamed.details.after.branch;
+  assert.ok(renamedBranch.endsWith("feature/renamed"));
+  assert.equal(execute("git", ["branch", "--list", secondBranch], sandbox), "");
+  assert.equal(execute("git", ["rev-parse", "HEAD^{tree}"], sandbox), squashedTree);
+
+  await writeFile(join(sandbox, "foldable.txt"), "foldable\n");
+  execute("git", ["add", "foldable.txt"], sandbox);
+  const foldable = await invoke({
+    operation: "create",
+    name: "feature/foldable",
+    subject: "Add foldable change",
+    body: "Prepare fold coverage.",
+  });
+  const foldableBranch = foldable.details.after.branch;
+  const foldedTree = execute("git", ["rev-parse", "HEAD^{tree}"], sandbox);
+  const folded = await invoke({ operation: "fold" });
+  assert.equal(folded.details.after.branch, renamedBranch);
+  assert.equal(execute("git", ["rev-parse", "HEAD^{tree}"], sandbox), foldedTree);
+  assert.equal(execute("git", ["branch", "--list", foldableBranch], sandbox), "");
+
+  await invoke({ operation: "delete", branch: firstBranch });
+  assert.equal(execute("git", ["branch", "--list", firstBranch], sandbox), "");
+  assert.equal(execute("git", ["branch", "--show-current"], sandbox), renamedBranch);
   assert.equal(execute("git", ["status", "--short"], sandbox), "");
+
+  execute("git", ["checkout", "main"], sandbox);
+  await writeFile(join(sandbox, "conflict.txt"), "parent\n");
+  execute("git", ["add", "conflict.txt"], sandbox);
+  const conflictParentCreate = await invoke({
+    operation: "create",
+    name: "conflict/parent",
+    subject: "Add conflict base",
+    body: "Prepare conflict recovery coverage.",
+  });
+  const conflictParent = conflictParentCreate.details.after.branch;
+  await writeFile(join(sandbox, "conflict.txt"), "child\n");
+  execute("git", ["add", "conflict.txt"], sandbox);
+  const conflictChildCreate = await invoke({
+    operation: "create",
+    name: "conflict/child",
+    subject: "Change conflict child",
+    body: "Prepare conflict recovery coverage.",
+  });
+  const conflictChild = conflictChildCreate.details.after.branch;
+
+  execute("git", ["checkout", conflictParent], sandbox);
+  await writeFile(join(sandbox, "conflict.txt"), "parent advanced\n");
+  execute("git", ["add", "conflict.txt"], sandbox);
+  execute("git", ["commit", "-m", "Advance conflicting parent"], sandbox);
+  execute("git", ["checkout", conflictChild], sandbox);
+
+  await assert.rejects(
+    invoke({ operation: "restack", branch: conflictChild }),
+    /Graphite restack failed/u,
+  );
+  await invoke({ operation: "abort" });
+  assert.equal(execute("git", ["status", "--short"], sandbox), "");
+  assert.equal(execute("git", ["branch", "--show-current"], sandbox), conflictChild);
+
+  await assert.rejects(
+    invoke({ operation: "restack", branch: conflictChild }),
+    /Graphite restack failed/u,
+  );
+  await writeFile(join(sandbox, "conflict.txt"), "resolved\n");
+  execute("git", ["add", "conflict.txt"], sandbox);
+  await invoke({ operation: "continue" });
+  assert.equal(execute("git", ["status", "--short"], sandbox), "");
+  assert.equal(await readFile(join(sandbox, "conflict.txt"), "utf8"), "resolved\n");
+
+  const stackResult = await invoke({ operation: "inspect", target: "stack" });
+  assert.ok(stackResult.content[0].text.includes(conflictChild));
+  assert.match(stackResult.content[0].text, /main/u);
 });
