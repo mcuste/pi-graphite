@@ -1,6 +1,6 @@
 {
   "name": "@mcuste/pi-graphite",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Graphite stacked-branch operations as one safe, model-callable tool for the Pi and Oh My Pi coding agents",
   "keywords": [
     "pi-package",
