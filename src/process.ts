@@ -51,11 +51,30 @@ export class CommandCancelledError extends Error {
   }
 }
 
+/**
+ * Node kills the child once its output passes `maxBuffer`. That is a size limit, not a
+ * broken executable, so it gets its own type instead of looking like a failed spawn.
+ */
+export class CommandOutputLimitError extends Error {
+  readonly command: string;
+  readonly maxOutputBytes: number;
+
+  constructor(command: string, maxOutputBytes: number, options?: ErrorOptions) {
+    super(`${command} produced more than ${maxOutputBytes} bytes of output and was stopped.`, {
+      ...options,
+    });
+    this.name = "CommandOutputLimitError";
+    this.command = command;
+    this.maxOutputBytes = maxOutputBytes;
+  }
+}
+
 export const runCommand: CommandRunner = (command, args, options) => {
   if (options.signal?.aborted) {
     return Promise.reject(new CommandCancelledError(command));
   }
 
+  const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   const { promise, resolve, reject } = Promise.withResolvers<CommandResult>();
   execFile(
     command,
@@ -63,13 +82,18 @@ export const runCommand: CommandRunner = (command, args, options) => {
     {
       cwd: options.cwd,
       encoding: "utf8",
-      maxBuffer: options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
+      maxBuffer: maxOutputBytes,
       signal: options.signal,
       windowsHide: true,
     },
     (error, stdout, stderr) => {
       if (options.signal?.aborted || error?.name === "AbortError") {
         reject(new CommandCancelledError(command));
+        return;
+      }
+
+      if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+        reject(new CommandOutputLimitError(command, maxOutputBytes, { cause: error }));
         return;
       }
 
