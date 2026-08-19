@@ -31,6 +31,7 @@ pnpm test:integration  # Build, then run the real Git and Graphite scenarios
 pnpm deadcode          # Find unused files, exports, and dependencies with Knip
 pnpm package:check     # Build and validate the publishable package with publint
 pnpm security          # Audit dependencies for high-severity advisories
+pnpm release <version> # Prepare, gate, commit, and tag a release
 ```
 
 The two suites are separated by filename, not by an environment variable, so neither can be
@@ -82,12 +83,23 @@ It runs as three jobs:
 3. **github-release** creates the GitHub release, using the matching `CHANGELOG.md` section as its
    notes.
 
-To cut a release:
+To cut a release, run `pnpm release <version>` from a clean `main`. It refuses to start unless the
+version is above the current one, the worktree is clean, `main` is checked out, the tag is free,
+and `CHANGELOG.md` has entries under `## [Unreleased]`. It then:
 
-1. Update the version in `package.json` and move the `Unreleased` changelog entries under a
-   `## [<version>]` heading.
-2. Run `pnpm check`.
-3. Commit, then tag `v<version>` and push the tag.
+1. Sets the version in `package.json` and retitles the `Unreleased` section to
+   `## [<version>] - <date>`.
+2. Runs `pnpm check`, restoring both files and stopping if the gate fails.
+3. Commits `chore: release <version>` and creates the `v<version>` tag.
+
+Pushing stays separate, because that is where the release becomes public:
+
+```bash
+git push && git push origin v<version>
+```
+
+Pass `--push` to have the script do both pushes. Before the tag lands, undo everything with
+`git tag -d v<version> && git reset --hard HEAD~1`.
 
 ### npm authentication
 
