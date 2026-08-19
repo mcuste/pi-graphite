@@ -257,8 +257,8 @@ export class GraphiteCapabilityResolver {
   }
 
   /**
-   * Confirms a cached trunk still exists locally. A trunk that was renamed or deleted
-   * makes the cache stale, so detection runs again instead of failing the tool call.
+   * A trunk that was renamed or deleted makes the cache stale, so detection runs again
+   * instead of failing the tool call.
    */
   async #reverifyTrunk(
     repository: GitRepository,

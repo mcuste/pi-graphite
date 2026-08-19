@@ -169,10 +169,7 @@ type GraphiteOperation = GraphiteParameters["operation"];
 type InspectTarget = Extract<GraphiteParameters, { operation: "inspect" }>["target"];
 type MutationOperation = Exclude<GraphiteOperation, "inspect">;
 
-/**
- * The complete Graphite vocabulary this extension can spawn. Everything the tool passes
- * to `gt` is either one of these fixed tokens or a value that was parsed first.
- */
+/** The complete set of `gt` subcommands this extension is allowed to spawn. */
 const GRAPHITE_SUBCOMMANDS = [
   "log",
   "state",
@@ -313,12 +310,11 @@ interface WorkingTreeState {
   readonly stack: string;
 }
 
-/** A worktree with a branch checked out. */
 interface AttachedWorkingTree extends WorkingTreeState {
   readonly branch: string;
 }
 
-/** A worktree with a detached HEAD, which is how a halted Graphite rebase looks. */
+/** A detached HEAD, which is how a halted Graphite rebase looks. */
 interface DetachedWorkingTree extends WorkingTreeState {
   readonly branch: null;
 }
