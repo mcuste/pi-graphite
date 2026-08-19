@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Value } from "typebox/value";
-import { CommandCancelledError, CommandInvocationError } from "../dist/process.js";
+import {
+  CommandCancelledError,
+  CommandInvocationError,
+  CommandOutputLimitError,
+} from "../dist/process.js";
 import { registerGraphiteTools } from "../dist/tools.js";
 
 const repositoryRoot = "/virtual/repository";
@@ -1088,6 +1092,24 @@ test("restack fails closed when Graphite leaves the repository detached", async 
     execute(graphite, { operation: "restack", branch: "feature/child" }),
     verificationFailed("Graphite reported success but left the repository detached."),
   );
+});
+
+test("oversized Graphite output keeps the cached capability and its own diagnosis", async () => {
+  const forgotten = [];
+  const fixture = createRunner();
+  const runner = async (command, args, options) => {
+    if (command === "gt" && args[0] === "restack") {
+      throw new CommandOutputLimitError("gt", 2048);
+    }
+    return fixture.runner(command, args, options);
+  };
+  const graphite = registerWith(runner, (root) => forgotten.push(root)).get("graphite");
+
+  await assert.rejects(execute(graphite, { operation: "restack", branch: "feature/child" }), {
+    name: "CommandOutputLimitError",
+    message: "gt produced more than 2048 bytes of output and was stopped.",
+  });
+  assert.deepEqual(forgotten, []);
 });
 
 test("a gt executable that cannot start invalidates the cached capability", async () => {

@@ -9,7 +9,8 @@
 | `src/branch.ts` | Branch name parsing and validation |
 | `src/capability.ts` | Repository detection and the on-disk cache |
 | `src/process.ts` | Child process execution |
-| `test/` | Deterministic suites plus a real Git and Graphite integration suite |
+| `test/*.test.mjs` | Deterministic suites, run by `pnpm test` |
+| `test/*.e2e.mjs` | Scenarios against real Git and Graphite, run by `pnpm test:integration` |
 
 Pi loads TypeScript through [jiti](https://github.com/unjs/jiti) and Oh My Pi runs it natively, so
 `package.json` points both `pi.extensions` and `omp.extensions` at `src/index.ts` and no build step
@@ -26,16 +27,28 @@ pnpm check             # Everything below, in one gate; also run by CI
 pnpm fix               # Apply safe Biome formatting, import, and lint fixes
 pnpm quality           # Check formatting, imports, and lint rules
 pnpm test              # Build, then run the deterministic suite
-pnpm test:integration  # Build, then run the real Git and Graphite scenario
+pnpm test:integration  # Build, then run the real Git and Graphite scenarios
 pnpm deadcode          # Find unused files, exports, and dependencies with Knip
 pnpm package:check     # Build and validate the publishable package with publint
 pnpm security          # Audit dependencies for high-severity advisories
 ```
 
-The integration suite creates an isolated Git repository and exercises every inspection target,
-exact checkout, staged-only create, commit, amend, squash, fold, rename, delete, move, effective
-restacking, conflict abort, and conflict continue. Remote operations are excluded because the
-fixture cannot make external state or credentials deterministic.
+The two suites are separated by filename, not by an environment variable, so neither can be
+skipped without the skip being visible in the run. Each `*.e2e.mjs` scenario builds its own
+isolated Git and Graphite repository, and stale sandboxes from an interrupted run are cleared at
+the start of the next one rather than only in teardown. The five scenarios cover:
+
+1. A stacked branch through every local operation: each inspection target, exact checkout,
+   staged-only create, commit, amend, squash, fold, rename, effective restacking, move, and a
+   leaf delete.
+2. Move and delete on a mid-stack branch, which re-parent the branches above it.
+3. Preconditions rejecting unsafe requests, each one asserting the repository did not move.
+4. A restack halted by a conflict, then aborted and resumed.
+5. The on-disk capability cache being written, reused by a second registration, and re-detected
+   when its stored trunk no longer exists.
+
+Remote operations are excluded because the fixture cannot make external state or credentials
+deterministic.
 
 CI pins Graphite CLI 1.8.6 through `devDependencies` and runs the same `pnpm check` gate.
 

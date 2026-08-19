@@ -51,7 +51,7 @@
     "quality": "biome check .",
     "security": "pnpm audit --audit-level high",
     "test": "pnpm build && node --test test/*.test.mjs",
-    "test:integration": "pnpm build && PI_GRAPHITE_INTEGRATION=1 node --test test/integration.test.mjs",
+    "test:integration": "pnpm build && node --test test/*.e2e.mjs",
     "prepack": "pnpm build"
   },
   "peerDependencies": {
@@ -68,7 +68,8 @@
   },
   "knip": {
     "entry": [
-      "test/**/*.test.mjs"
+      "test/**/*.test.mjs",
+      "test/**/*.e2e.mjs"
     ],
     "project": [
       "src/**/*.ts",

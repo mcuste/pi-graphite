@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- A command whose output passes the 2 MB capture limit now reports that limit as the cause. It
+  previously looked like a failed spawn, which blamed `gt` for being missing from PATH and
+  discarded the repository capability cache.
+
 ## [0.1.0] - 2026-08-19
 
 ### Added
