@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
 import { GraphiteCapabilityResolver, GraphiteUnavailableError } from "../dist/capability.js";
-import { CommandCancelledError } from "../dist/process.js";
+import { CommandCancelledError, CommandInvocationError } from "../dist/process.js";
 
 async function createRepositoryFixture(t) {
   const sandbox = await mkdtemp(join(process.cwd(), "test/.capability-"));
@@ -12,6 +12,21 @@ async function createRepositoryFixture(t) {
   await mkdir(gitDir, { recursive: true });
   t.after(() => rm(sandbox, { recursive: true, force: true }));
   return { root, gitDir };
+}
+
+function createDetectionRunner(root, gitDir, gt = {}) {
+  const calls = [];
+  const runner = async (command, args) => {
+    calls.push([command, ...args]);
+    if (command === "git") {
+      return { command, args, exitCode: 0, stdout: `${root}\n${gitDir}\n`, stderr: "" };
+    }
+    if (args[0] === "--version") {
+      return { command, args, exitCode: 0, stdout: "1.8.6\n", stderr: "", ...gt.version };
+    }
+    return { command, args, exitCode: 0, stdout: "main\n", stderr: "", ...gt.trunk };
+  };
+  return { calls, runner };
 }
 
 test("a successful detection writes and reuses repository-local capability state", async (t) => {
@@ -345,4 +360,91 @@ test("detection rejects unsupported Graphite CLI versions before repository acce
     ["git", "rev-parse", "--show-toplevel", "--absolute-git-dir"],
     ["gt", "--version"],
   ]);
+});
+
+test("a Graphite CLI that cannot be started is reported as missing from PATH", async (t) => {
+  const { root, gitDir } = await createRepositoryFixture(t);
+  const runner = async (command, args) => {
+    if (command === "git") {
+      return { command, args, exitCode: 0, stdout: `${root}\n${gitDir}\n`, stderr: "" };
+    }
+    throw new CommandInvocationError(
+      command,
+      `Unable to execute ${command}: spawn ${command} ENOENT`,
+      "ENOENT",
+    );
+  };
+
+  await assert.rejects(
+    new GraphiteCapabilityResolver(runner).ensure(root),
+    (error) => error instanceof GraphiteUnavailableError && /on PATH/u.test(error.message),
+  );
+});
+
+test("detection accepts the version formats the Graphite CLI prints", async (t) => {
+  const cases = [
+    ["gt version prefix on stdout", { stdout: "gt version 1.8.6\n" }],
+    ["bare version on stderr", { stdout: "", stderr: "1.8.6\n" }],
+  ];
+
+  for (const [label, version] of cases) {
+    const { root, gitDir } = await createRepositoryFixture(t);
+    const { runner } = createDetectionRunner(root, gitDir, { version });
+
+    const capability = await new GraphiteCapabilityResolver(runner).ensure(root);
+
+    assert.equal(capability.gtVersion, "1.8.6", label);
+    assert.equal(capability.trunk, "main", label);
+  }
+});
+
+test("detection rejects trunk output that is not a single bare branch name", async (t) => {
+  const cases = [
+    ["extra line", { stdout: "main\nextra\n" }],
+    ["leading padding", { stdout: "  main\n" }],
+  ];
+
+  for (const [label, trunk] of cases) {
+    const { root, gitDir } = await createRepositoryFixture(t);
+    const { calls, runner } = createDetectionRunner(root, gitDir, { trunk });
+
+    await assert.rejects(
+      new GraphiteCapabilityResolver(runner).ensure(root),
+      (error) =>
+        error instanceof GraphiteUnavailableError &&
+        /invalid repository trunk/u.test(error.message),
+      label,
+    );
+    assert.deepEqual(
+      calls.filter(([, arg]) => arg === "check-ref-format"),
+      [],
+      label,
+    );
+  }
+});
+
+test("forget from a subdirectory also clears the entry cached under the repository root", async (t) => {
+  const { root, gitDir } = await createRepositoryFixture(t);
+  const subdirectory = join(root, "packages/app");
+  const { runner } = createDetectionRunner(root, gitDir);
+  const resolver = new GraphiteCapabilityResolver(runner);
+  await resolver.ensure(subdirectory);
+  assert.equal((await resolver.ensure(root)).cache, "memory");
+
+  resolver.forget(subdirectory);
+
+  assert.equal((await resolver.ensure(root)).cache, "persistent");
+});
+
+test("forget from the repository root also clears the entry cached under a subdirectory", async (t) => {
+  const { root, gitDir } = await createRepositoryFixture(t);
+  const subdirectory = join(root, "packages/app");
+  const { runner } = createDetectionRunner(root, gitDir);
+  const resolver = new GraphiteCapabilityResolver(runner);
+  await resolver.ensure(subdirectory);
+  assert.equal((await resolver.ensure(subdirectory)).cache, "memory");
+
+  resolver.forget(root);
+
+  assert.equal((await resolver.ensure(subdirectory)).cache, "persistent");
 });

@@ -202,6 +202,35 @@ test("all tools preserve the expected stack in an isolated Graphite repository",
   assert.equal(execute("git", ["branch", "--show-current"], sandbox), renamedBranch);
   assert.equal(execute("git", ["status", "--short"], sandbox), "");
 
+  await assert.rejects(
+    invoke({
+      operation: "create",
+      name: "feature.lock",
+      subject: "Reject an invalid ref name",
+      body: "Real git must refuse this name.",
+    }),
+    /name is not a valid Git branch name/u,
+  );
+
+  await assert.rejects(
+    invoke({ operation: "checkout", branch: "feature/never-created" }),
+    /branch does not name an existing local branch/u,
+  );
+
+  await writeFile(join(sandbox, "dirty.txt"), "dirty\n");
+  await assert.rejects(
+    invoke({ operation: "checkout", branch: "main" }),
+    /checkout requires a clean worktree/u,
+  );
+  await rm(join(sandbox, "dirty.txt"));
+  assert.equal(execute("git", ["status", "--short"], sandbox), "");
+
+  await assert.rejects(
+    invoke({ operation: "delete", branch: renamedBranch }),
+    /delete cannot remove .* while it is checked out/u,
+  );
+  assert.equal(execute("git", ["branch", "--show-current"], sandbox), renamedBranch);
+
   execute("git", ["checkout", "main"], sandbox);
   await writeFile(join(sandbox, "conflict.txt"), "parent\n");
   execute("git", ["add", "conflict.txt"], sandbox);

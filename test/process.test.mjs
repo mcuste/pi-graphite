@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CommandCancelledError, runChecked, runCommand } from "../dist/process.js";
+import {
+  CommandCancelledError,
+  CommandInvocationError,
+  runChecked,
+  runCommand,
+} from "../dist/process.js";
 
 const cwd = process.cwd();
 
@@ -39,5 +44,15 @@ test("runCommand rejects an already-aborted invocation", async () => {
   await assert.rejects(
     runCommand(process.execPath, ["--version"], { cwd, signal: controller.signal }),
     CommandCancelledError,
+  );
+});
+
+test("runCommand reports a missing executable as an invocation failure", async () => {
+  await assert.rejects(
+    runCommand("pi-graphite-missing-binary", [], { cwd }),
+    (error) =>
+      error instanceof CommandInvocationError &&
+      error.code === "ENOENT" &&
+      /^Unable to execute pi-graphite-missing-binary: /u.test(error.message),
   );
 });

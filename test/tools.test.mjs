@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CommandCancelledError } from "../dist/process.js";
+import { Value } from "typebox/value";
+import { CommandCancelledError, CommandInvocationError } from "../dist/process.js";
 import { registerGraphiteTools } from "../dist/tools.js";
 
 const repositoryRoot = "/virtual/repository";
@@ -15,13 +16,13 @@ const capability = {
   cache: "persistent",
 };
 
-function registerWith(runner) {
+function registerWith(runner, forget = () => {}) {
   const tools = new Map();
   const capabilities = {
     async ensure() {
       return capability;
     },
-    forget() {},
+    forget,
   };
   registerGraphiteTools(
     {
@@ -50,9 +51,17 @@ function createRunner({
   rebase = false,
   unresolved = "",
   postStatusFailure = false,
-  treeMismatch = false,
+  stackFailure = "",
+  mergeBaseFailure = false,
   branchPrefix = "",
   commitsAboveParent = "1",
+  stagedAfterMutation = false,
+  branchAfter = "",
+  headAfter = "",
+  parentAfter = "",
+  treeAfter = "",
+  unstagedPatchAfter = "",
+  untrackedAfter = "",
 } = {}) {
   const calls = [];
   let mutationCompleted = false;
@@ -66,6 +75,19 @@ function createRunner({
 
   const runner = async (command, args) => {
     calls.push([command, ...args]);
+    // `gt log` fails until the mutation runs, the way it does while a rebase is halted.
+    if (stackFailure && !mutationCompleted && command === "gt" && args[0] === "log") {
+      if (stackFailure === "throw") {
+        throw new Error("gt log crashed");
+      }
+      return {
+        command,
+        args,
+        exitCode: 1,
+        stdout: "",
+        stderr: "gt log is unavailable during a rebase",
+      };
+    }
     let exitCode = 0;
     let stdout = "";
     let stderr = "";
@@ -89,7 +111,8 @@ function createRunner({
           } else if (args.includes("--cached")) {
             stdout = staged && !stagingConsumed ? "staged summary\n" : "";
           } else if (args.includes("--binary")) {
-            stdout = "unstaged patch\n";
+            stdout =
+              mutationCompleted && unstagedPatchAfter ? unstagedPatchAfter : "unstaged patch\n";
           } else {
             stdout = "unstaged summary\n";
           }
@@ -107,9 +130,13 @@ function createRunner({
           stdout = `${stagedTree}\n`;
           break;
         case "ls-files":
-          stdout = "untracked.txt\0";
+          stdout = mutationCompleted && untrackedAfter ? untrackedAfter : "untracked.txt\0";
           break;
         case "merge-base":
+          if (mergeBaseFailure) {
+            exitCode = 1;
+            stderr = "merge-base failed";
+          }
           break;
         case "rev-list":
           stdout = `${commitsAboveParent}\n`;
@@ -123,7 +150,7 @@ function createRunner({
             if (rebaseInProgress) stdout = "rebase-head\n";
             else exitCode = 1;
           } else if (args.at(-1) === "HEAD^{tree}") {
-            stdout = `${treeMismatch ? "wrong-tree" : stagedTree}\n`;
+            stdout = `${mutationCompleted && treeAfter ? treeAfter : stagedTree}\n`;
           } else if (args.at(-1) === "HEAD^") {
             stdout = `${currentParent}\n`;
           } else {
@@ -166,6 +193,10 @@ function createRunner({
         }
         if (operation === "delete") missingBranches.add(args[1]);
         if (operation === "continue" || operation === "abort") rebaseInProgress = false;
+        if (stagedAfterMutation) stagingConsumed = false;
+        if (branchAfter) currentBranch = branchAfter;
+        if (headAfter) currentHead = headAfter;
+        if (parentAfter) currentParent = parentAfter;
       }
     }
 
@@ -174,23 +205,30 @@ function createRunner({
   return { calls, runner };
 }
 
-const approvedContext = {
-  cwd: repositoryRoot,
-  ui: {
-    async confirm() {
-      return true;
+function createContext(confirmed) {
+  const confirms = [];
+  const context = {
+    cwd: repositoryRoot,
+    ui: {
+      async confirm(title, message) {
+        confirms.push([title, message]);
+        return confirmed;
+      },
     },
-  },
-};
+  };
+  return { confirms, context };
+}
 
-const declinedContext = {
-  cwd: repositoryRoot,
-  ui: {
-    async confirm() {
-      return false;
-    },
-  },
-};
+const approvedContext = createContext(true).context;
+
+/** Asserts the generic wrapper message and which verification check produced it. */
+function verificationFailed(expectedCause) {
+  return (error) => {
+    assert.match(error.message, /completed, but post-operation verification failed/u);
+    assert.equal(error.cause.message, expectedCause);
+    return true;
+  };
+}
 
 function execute(tool, parameters, signal, context = approvedContext) {
   return tool.execute("graphite-call", parameters, signal, undefined, context);
@@ -221,24 +259,80 @@ test("registers one dynamically classified Graphite tool", () => {
   });
   assert.equal(graphite.approval({ operation: "sync" }).policy, "deny");
   assert.equal(graphite.approval({ operation: "unknown" }).policy, "deny");
-  assert.deepEqual(
-    graphite.parameters.anyOf.map((entry) => entry.properties.operation.const),
+});
+
+test("the parameter schema accepts one canonical payload per operation", () => {
+  const payloads = [
+    { operation: "inspect", target: "stack" },
+    { operation: "checkout", branch: "feature/child" },
+    { operation: "create", name: "feature/new", subject: "Add child", body: "Focused." },
+    { operation: "modify_commit", subject: "Add follow-up", body: "Focused." },
+    { operation: "modify_amend" },
+    { operation: "squash", subject: "Squashed", body: "Focused." },
+    { operation: "fold" },
+    { operation: "rename", name: "feature/renamed" },
+    { operation: "move", source: "feature/child", onto: "main" },
+    { operation: "restack", branch: "feature/child" },
+    { operation: "delete", branch: "feature/stale" },
+    { operation: "continue" },
+    { operation: "abort" },
+  ];
+  const { runner } = createRunner();
+  const graphite = registerWith(runner).get("graphite");
+
+  for (const payload of payloads) {
+    assert.equal(Value.Check(graphite.parameters, payload), true, payload.operation);
+  }
+});
+
+test("the parameter schema rejects payloads outside the declared shape", () => {
+  const cases = [
+    ["extra field", { operation: "fold", branch: "feature/child" }],
+    ["missing body", { operation: "create", name: "feature/new", subject: "Add child" }],
+    ["empty branch", { operation: "restack", branch: "" }],
+    ["overlong name", { operation: "rename", name: "x".repeat(256) }],
+    ["unknown operation", { operation: "sync" }],
+  ];
+  const { runner } = createRunner();
+  const graphite = registerWith(runner).get("graphite");
+
+  for (const [label, payload] of cases) {
+    assert.equal(Value.Check(graphite.parameters, payload), false, label);
+  }
+});
+
+test("approval details spell out the operation the user is authorizing", () => {
+  const cases = [
+    [{ operation: "inspect", target: "stack" }, ["Operation: inspect stack"]],
+    [{ operation: "checkout", branch: "feature/child" }, ["Operation: checkout feature/child"]],
     [
-      "inspect",
-      "checkout",
-      "create",
-      "modify_commit",
-      "modify_amend",
-      "squash",
-      "fold",
-      "rename",
-      "move",
-      "restack",
-      "delete",
-      "continue",
-      "abort",
+      { operation: "create", name: "feature/new", subject: "Add child", body: "Focused." },
+      ["Operation: create feature/new"],
     ],
-  );
+    [
+      { operation: "modify_commit", subject: "Add follow-up", body: "Focused." },
+      ["Operation: modify commit"],
+    ],
+    [{ operation: "modify_amend" }, ["Operation: modify amend"]],
+    [{ operation: "squash", subject: "Squashed", body: "Focused." }, ["Operation: squash"]],
+    [{ operation: "fold" }, ["Operation: fold"]],
+    [{ operation: "rename", name: "feature/renamed" }, ["Operation: rename to feature/renamed"]],
+    [
+      { operation: "move", source: "feature/child", onto: "main" },
+      ["Operation: move feature/child", "New parent: main"],
+    ],
+    [{ operation: "restack", branch: "feature/child" }, ["Operation: restack feature/child"]],
+    [{ operation: "delete", branch: "feature/stale" }, ["Operation: delete feature/stale"]],
+    [{ operation: "continue" }, ["Operation: continue"]],
+    [{ operation: "abort" }, ["Operation: abort"]],
+    ["delete feature/stale", undefined],
+  ];
+  const { runner } = createRunner();
+  const graphite = registerWith(runner).get("graphite");
+
+  for (const [args, expected] of cases) {
+    assert.deepEqual(graphite.formatApprovalDetails(args), expected, JSON.stringify(args));
+  }
 });
 
 test("inspection targets map to fixed read-only argument arrays", async () => {
@@ -431,13 +525,14 @@ test("fold refuses to move commits onto trunk", async () => {
 
 test("delete refuses trunk, the current branch, and unconfirmed removals", async () => {
   const cases = [
-    ["main", approvedContext, /cannot remove the trunk branch "main"/u],
-    ["current", approvedContext, /while it is checked out/u],
-    ["feature/stale", declinedContext, /requires explicit user confirmation/u],
+    ["main", true, /cannot remove the trunk branch "main"/u, 0],
+    ["current", true, /while it is checked out/u, 0],
+    ["feature/stale", false, /requires explicit user confirmation/u, 1],
   ];
 
-  for (const [branch, context, expectedError] of cases) {
+  for (const [branch, confirmed, expectedError, expectedConfirms] of cases) {
     const { calls, runner } = createRunner();
+    const { confirms, context } = createContext(confirmed);
     const graphite = registerWith(runner).get("graphite");
 
     await assert.rejects(
@@ -445,14 +540,51 @@ test("delete refuses trunk, the current branch, and unconfirmed removals", async
       expectedError,
     );
     assert.equal(mutatedWith(calls, "delete"), false, branch);
+    assert.equal(confirms.length, expectedConfirms, branch);
+  }
+});
+
+test("delete asks the user to confirm the exact branch it removes", async () => {
+  const { runner } = createRunner();
+  const { confirms, context } = createContext(true);
+  const graphite = registerWith(runner).get("graphite");
+
+  await execute(graphite, { operation: "delete", branch: "feature/stale" }, undefined, context);
+
+  assert.equal(confirms.length, 1);
+  assert.equal(confirms[0][0], "Delete Graphite branch feature/stale?");
+  assert.match(confirms[0][1], /gt delete --force/u);
+});
+
+test("delete and abort fail closed when the host offers no confirmation prompt", async () => {
+  const cases = [
+    [{ operation: "delete", branch: "feature/stale" }, undefined],
+    [{ operation: "abort" }, { rebase: true }],
+  ];
+
+  for (const [parameters, runnerOptions] of cases) {
+    const { calls, runner } = createRunner(runnerOptions);
+    const graphite = registerWith(runner).get("graphite");
+
+    await assert.rejects(
+      execute(graphite, parameters, undefined, { cwd: repositoryRoot }),
+      /requires explicit user confirmation/u,
+      parameters.operation,
+    );
+    assert.equal(mutated(calls), false, parameters.operation);
   }
 });
 
 test("rename and fold verify that the previous branch is gone", async () => {
-  for (const parameters of [
-    { operation: "rename", name: "feature/renamed" },
-    { operation: "fold" },
-  ]) {
+  const cases = [
+    [
+      { operation: "rename", name: "feature/renamed" },
+      'The renamed branch still exists: "current".',
+    ],
+    [{ operation: "fold" }, 'The folded branch still exists: "current".'],
+  ];
+
+  for (const [parameters, expectedCause] of cases) {
     const fixture = createRunner();
     const runner = async (command, args, options) => {
       const result = await fixture.runner(command, args, options);
@@ -463,11 +595,7 @@ test("rename and fold verify that the previous branch is gone", async () => {
     };
     const graphite = registerWith(runner).get("graphite");
 
-    await assert.rejects(
-      execute(graphite, parameters),
-      /completed, but post-operation verification failed/u,
-      parameters.operation,
-    );
+    await assert.rejects(execute(graphite, parameters), verificationFailed(expectedCause));
   }
 });
 
@@ -485,7 +613,7 @@ test("squash verifies a single commit above the parent branch", async () => {
 
   await assert.rejects(
     execute(graphite, { operation: "squash", subject: "Squashed", body: "Focused." }),
-    /completed, but post-operation verification failed/u,
+    verificationFailed('Graphite squash left 2 commits above "parent-branch".'),
   );
   assert.deepEqual(
     calls.find(([command, operation]) => command === "git" && operation === "rev-list")?.slice(1),
@@ -594,24 +722,31 @@ test("whitespace, NUL, and multiline commit subjects are rejected before mutatio
 });
 
 test("continue requires a rebase with every conflict resolved", async () => {
-  for (const options of [{ rebase: false }, { rebase: true, unresolved: "src/conflict.ts\n" }]) {
+  const cases = [
+    [{ rebase: false }, /No rebase conflict is available/u],
+    [{ rebase: true, unresolved: "src/conflict.ts\n" }, /Resolve and stage these conflicts/u],
+  ];
+
+  for (const [options, expectedError] of cases) {
     const { calls, runner } = createRunner(options);
     const graphite = registerWith(runner).get("graphite");
 
-    await assert.rejects(execute(graphite, { operation: "continue" }));
+    await assert.rejects(execute(graphite, { operation: "continue" }), expectedError);
     assert.equal(mutatedWith(calls, "continue"), false);
   }
 });
 
 test("abort fails closed without explicit user confirmation", async () => {
   const { calls, runner } = createRunner({ rebase: true });
+  const { confirms, context } = createContext(false);
   const graphite = registerWith(runner).get("graphite");
 
   await assert.rejects(
-    execute(graphite, { operation: "abort" }, undefined, declinedContext),
+    execute(graphite, { operation: "abort" }, undefined, context),
     /requires explicit user confirmation/u,
   );
   assert.equal(mutatedWith(calls, "abort"), false);
+  assert.equal(confirms.length, 1);
 });
 
 test("same-repository mutations execute serially", async () => {
@@ -713,7 +848,14 @@ test("failed post-verification reports that mutation may have completed", async 
 
   await assert.rejects(
     execute(graphite, { operation: "restack", branch: "feature/child" }),
-    /completed, but post-operation verification failed[\s\S]*may already have changed[\s\S]*before retrying/u,
+    (error) => {
+      assert.match(
+        error.message,
+        /completed, but post-operation verification failed[\s\S]*may already have changed[\s\S]*before retrying/u,
+      );
+      assert.equal(error.cause.message, "Unable to read Git status (exit 1).\nstatus failed");
+      return true;
+    },
   );
   assert.equal(
     calls.filter(([command, operation]) => command === "gt" && operation === "restack").length,
@@ -734,7 +876,7 @@ test("clean mutations fail closed when Graphite leaves repository changes", asyn
 
   await assert.rejects(
     execute(graphite, { operation: "restack", branch: "feature/child" }),
-    /completed, but post-operation verification failed/u,
+    verificationFailed("Graphite restack left the worktree dirty:\n M src/unexpected.ts"),
   );
 });
 
@@ -751,7 +893,7 @@ test("rename fails closed when Graphite changes the worktree", async () => {
 
   await assert.rejects(
     execute(graphite, { operation: "rename", name: "feature/renamed" }),
-    /completed, but post-operation verification failed/u,
+    verificationFailed("Graphite rename changed the worktree unexpectedly."),
   );
 });
 
@@ -768,12 +910,12 @@ test("restack fails closed if Graphite changes the checkout", async () => {
 
   await assert.rejects(
     execute(graphite, { operation: "restack", branch: "feature/child" }),
-    /completed, but post-operation verification failed/u,
+    verificationFailed("Graphite restack changed the current branch unexpectedly."),
   );
 });
 
 test("commit tree mismatch is reported as uncertain success", async () => {
-  const { calls, runner } = createRunner({ treeMismatch: true });
+  const { calls, runner } = createRunner({ treeAfter: "wrong-tree" });
   const graphite = registerWith(runner).get("graphite");
 
   await assert.rejects(
@@ -783,10 +925,185 @@ test("commit tree mismatch is reported as uncertain success", async () => {
       subject: "Add child",
       body: "Focused.",
     }),
-    /completed, but post-operation verification failed/u,
+    verificationFailed("Graphite committed a tree that differs from the staged snapshot."),
   );
   assert.equal(
     calls.filter(([command, operation]) => command === "gt" && operation === "create").length,
     1,
   );
+});
+
+test("post-operation verification names the check that failed", async () => {
+  const create = {
+    operation: "create",
+    name: "feature/new",
+    subject: "Add child",
+    body: "Focused.",
+  };
+  const cases = [
+    [
+      create,
+      { unstagedPatchAfter: "rewritten patch\n" },
+      "Graphite changed unstaged tracked content unexpectedly.",
+    ],
+    [
+      create,
+      { untrackedAfter: "other.txt\0" },
+      "Graphite changed the untracked path set unexpectedly.",
+    ],
+    [
+      create,
+      { stagedAfterMutation: true },
+      "Graphite left staged changes after reporting commit success.",
+    ],
+    [create, { headAfter: "head-before" }, "Graphite reported success without changing HEAD."],
+    [
+      create,
+      { parentAfter: "unexpected-parent" },
+      "Graphite created a commit on an unexpected parent.",
+    ],
+    [create, { branchAfter: "current" }, "Graphite create did not switch to a new branch."],
+    [
+      { operation: "modify_commit", subject: "Add follow-up", body: "Focused." },
+      { branchAfter: "unexpected-branch" },
+      "Graphite modify switched branches unexpectedly.",
+    ],
+    [
+      { operation: "modify_amend" },
+      { parentAfter: "unexpected-parent" },
+      "Graphite amend changed the branch or commit parent unexpectedly.",
+    ],
+    [
+      { operation: "modify_amend" },
+      { branchAfter: "unexpected-branch" },
+      "Graphite amend changed the branch or commit parent unexpectedly.",
+    ],
+    [
+      { operation: "checkout", branch: "feature/child" },
+      { branchAfter: "unexpected-branch" },
+      'Graphite checked out "unexpected-branch" instead of "feature/child".',
+    ],
+    [
+      { operation: "squash", subject: "Squashed", body: "Focused." },
+      { treeAfter: "rewritten-tree" },
+      "Graphite squash changed the branch content.",
+    ],
+    [
+      { operation: "fold" },
+      { branchAfter: "unexpected-branch" },
+      'Graphite fold left "unexpected-branch" checked out instead of "parent-branch".',
+    ],
+    [
+      { operation: "fold" },
+      { treeAfter: "rewritten-tree" },
+      "Graphite fold changed the combined branch content.",
+    ],
+    [
+      { operation: "rename", name: "feature/renamed" },
+      { branchAfter: "unexpected-branch" },
+      'Graphite renamed the branch to "unexpected-branch" instead of "feature/renamed".',
+    ],
+    [
+      { operation: "rename", name: "feature/renamed" },
+      { headAfter: "head-rewritten" },
+      "Graphite rename changed the branch commit.",
+    ],
+    [
+      { operation: "move", source: "feature/child", onto: "main" },
+      { mergeBaseFailure: true },
+      "Moved branch is not based on the requested parent (exit 1).\nmerge-base failed",
+    ],
+  ];
+
+  for (const [parameters, runnerOptions, expectedCause] of cases) {
+    const { runner } = createRunner(runnerOptions);
+    const graphite = registerWith(runner).get("graphite");
+
+    await assert.rejects(execute(graphite, parameters), verificationFailed(expectedCause));
+  }
+});
+
+test("conflict recovery keeps working when the stack cannot be drawn", async () => {
+  const cases = [
+    [
+      { operation: "continue" },
+      "exit",
+      "[stack unavailable during conflict: gt log is unavailable during a rebase]",
+    ],
+    [{ operation: "abort" }, "throw", "[stack unavailable during conflict: gt log crashed]"],
+  ];
+
+  for (const [parameters, stackFailure, expectedStack] of cases) {
+    const { runner } = createRunner({ rebase: true, stackFailure });
+    const graphite = registerWith(runner).get("graphite");
+
+    const result = await execute(graphite, parameters);
+
+    assert.equal(result.details.before.stack, expectedStack, parameters.operation);
+    assert.equal(result.details.after.stack, "stack output", parameters.operation);
+  }
+});
+
+test("operations outside conflict recovery stop when the stack cannot be drawn", async () => {
+  const cases = [
+    ["exit", /Unable to inspect the Graphite stack/u],
+    ["throw", /gt log crashed/u],
+  ];
+
+  for (const [stackFailure, expectedError] of cases) {
+    const { calls, runner } = createRunner({ stackFailure });
+    const graphite = registerWith(runner).get("graphite");
+
+    await assert.rejects(
+      execute(graphite, { operation: "restack", branch: "feature/child" }),
+      expectedError,
+    );
+    assert.equal(mutated(calls), false, stackFailure);
+  }
+});
+
+test("mutations that need a branch refuse to run on a detached HEAD", async () => {
+  const { calls, runner } = createRunner({ rebase: true });
+  const graphite = registerWith(runner).get("graphite");
+
+  await assert.rejects(
+    execute(graphite, { operation: "restack", branch: "feature/child" }),
+    /restack requires an attached local branch/u,
+  );
+  assert.equal(mutatedWith(calls, "restack"), false);
+});
+
+test("restack fails closed when Graphite leaves the repository detached", async () => {
+  const fixture = createRunner();
+  const runner = async (command, args, options) => {
+    const result = await fixture.runner(command, args, options);
+    if (mutatedWith(fixture.calls, "restack") && command === "git" && args[0] === "branch") {
+      return { ...result, stdout: "" };
+    }
+    return result;
+  };
+  const graphite = registerWith(runner).get("graphite");
+
+  await assert.rejects(
+    execute(graphite, { operation: "restack", branch: "feature/child" }),
+    verificationFailed("Graphite reported success but left the repository detached."),
+  );
+});
+
+test("a gt executable that cannot start invalidates the cached capability", async () => {
+  const forgotten = [];
+  const fixture = createRunner();
+  const runner = async (command, args, options) => {
+    if (command === "gt" && args[0] === "restack") {
+      throw new CommandInvocationError("gt", "Unable to execute gt: spawn gt ENOENT", "ENOENT");
+    }
+    return fixture.runner(command, args, options);
+  };
+  const graphite = registerWith(runner, (root) => forgotten.push(root)).get("graphite");
+
+  await assert.rejects(
+    execute(graphite, { operation: "restack", branch: "feature/child" }),
+    /the `gt` executable could not be started/u,
+  );
+  assert.deepEqual(forgotten, [repositoryRoot]);
 });
