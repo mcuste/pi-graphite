@@ -88,6 +88,20 @@ One tool named `graphite`, selected by an `operation` field:
 approval; `delete` and `abort` always prompt. Full per-operation fields and guarantees are in
 [docs/operations.md](docs/operations.md).
 
+## System prompt note
+
+The tool loads on demand, so its description is not in the base prompt and the model can reach for
+`git` in a shell before it sees the tool. To close that gap, the extension appends one note to the
+system prompt at the start of each turn:
+
+> This repository uses Graphite so use the graphite tool for branch and stack operations instead
+> of git or gt in bash. The tool does not cover remote or publish operations.
+
+The note is added only in a repository where detection succeeds, only once per prompt, and only in
+a host that offers the `before_agent_start` event. A host without that event still gets the tool.
+Detection failures are remembered for five minutes, so a repository without Graphite does not spawn
+`git` and `gt` on every turn.
+
 ## What is deliberately missing
 
 - **Remote operations** (`gt get`, `gt sync`, `gt submit`) depend on credentials, remote state, and

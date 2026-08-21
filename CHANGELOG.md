@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- A system prompt note in Graphite repositories, telling the model to use the `graphite` tool
+  instead of `git` or `gt` in a shell. It is added through the host's `before_agent_start` event,
+  only once per prompt, and only where repository detection succeeds. Detection failures are
+  remembered for five minutes, so other repositories keep running no extra commands.
+
 ## [0.1.1] - 2026-08-19
 
 ### Fixed

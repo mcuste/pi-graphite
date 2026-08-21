@@ -20,6 +20,7 @@ const CACHE_FILE_NAME = "pi-graphite.json";
 const SUPPORTED_GT_VERSION = "1.8.6";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const CACHE_CLOCK_SKEW_MS = 5 * 60 * 1000;
+const UNAVAILABLE_RETRY_MS = 5 * 60 * 1000;
 
 interface StoredCapability {
   readonly schemaVersion: number;
@@ -130,6 +131,7 @@ export class GraphiteUnavailableError extends Error {
 export class GraphiteCapabilityResolver {
   readonly #runner: CommandRunner;
   readonly #memory = new Map<string, RememberedCapability>();
+  readonly #unavailable = new Map<string, number>();
 
   constructor(runner: CommandRunner = runCommand) {
     this.#runner = runner;
@@ -174,8 +176,31 @@ export class GraphiteCapabilityResolver {
     };
   }
 
+  /**
+   * Unlike `ensure`, this never throws. A failure is remembered for a short time, so a caller that
+   * runs on every turn does not spawn `git` and `gt` outside Graphite repositories.
+   */
+  async tryEnsure(cwd: string, signal?: AbortSignal): Promise<GraphiteCapability | undefined> {
+    const lookupKey = resolve(cwd);
+    const retryAt = this.#unavailable.get(lookupKey);
+    if (retryAt !== undefined && retryAt > Date.now()) {
+      return undefined;
+    }
+    this.#unavailable.delete(lookupKey);
+
+    try {
+      return await this.ensure(cwd, signal);
+    } catch (error) {
+      if (error instanceof GraphiteUnavailableError) {
+        this.#unavailable.set(lookupKey, Date.now() + UNAVAILABLE_RETRY_MS);
+      }
+      return undefined;
+    }
+  }
+
   forget(cwd: string): void {
     const lookupKey = resolve(cwd);
+    this.#unavailable.delete(lookupKey);
     const remembered = this.#memory.get(lookupKey);
     const repositoryRoot = resolve(remembered?.capability.repository.root ?? cwd);
     for (const [key, entry] of this.#memory) {
@@ -187,6 +212,7 @@ export class GraphiteCapabilityResolver {
 
   clearMemory(): void {
     this.#memory.clear();
+    this.#unavailable.clear();
   }
 
   #remember(

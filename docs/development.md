@@ -8,6 +8,7 @@
 | `src/tools.ts` | Tool schema, argument construction, pre- and postcondition checks |
 | `src/branch.ts` | Branch name parsing and validation |
 | `src/capability.ts` | Repository detection and the on-disk cache |
+| `src/guidance.ts` | The system prompt note added in Graphite repositories |
 | `src/process.ts` | Child process execution |
 | `test/*.test.mjs` | Deterministic suites, run by `pnpm test` |
 | `test/*.e2e.mjs` | Scenarios against real Git and Graphite, run by `pnpm test:integration` |

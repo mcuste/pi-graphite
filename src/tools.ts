@@ -12,6 +12,7 @@ import {
   GraphiteCapabilityResolver,
   GraphiteUnavailableError,
 } from "./capability.js";
+import { type GraphitePromptApi, registerGraphiteGuidance } from "./guidance.js";
 import {
   CommandCancelledError,
   CommandInvocationError,
@@ -274,7 +275,7 @@ interface ToolDefinition<TParameters extends TSchema, TDetails> {
   ): Promise<ToolResult<TDetails>>;
 }
 
-export interface GraphiteExtensionApi {
+export interface GraphiteExtensionApi extends GraphitePromptApi {
   registerTool<TParameters extends TSchema, TDetails>(
     definition: ToolDefinition<TParameters, TDetails>,
   ): void;
@@ -1191,6 +1192,8 @@ export function registerGraphiteTools(
 ): void {
   const runner = dependencies.runner ?? runCommand;
   const capabilities = dependencies.capabilities ?? new GraphiteCapabilityResolver(runner);
+
+  registerGraphiteGuidance(pi, capabilities);
 
   pi.registerTool<typeof GraphiteParameters, GraphiteToolDetails>({
     name: "graphite",

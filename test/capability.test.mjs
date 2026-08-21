@@ -448,3 +448,58 @@ test("forget from the repository root also clears the entry cached under a subdi
 
   assert.equal((await resolver.ensure(subdirectory)).cache, "persistent");
 });
+
+test("tryEnsure reports a working repository and reuses the remembered capability", async (t) => {
+  const { root, gitDir } = await createRepositoryFixture(t);
+  const { calls, runner } = createDetectionRunner(root, gitDir);
+  const resolver = new GraphiteCapabilityResolver(runner);
+
+  const detected = await resolver.tryEnsure(root);
+  assert.equal(detected.cache, "written");
+  assert.equal(detected.trunk, "main");
+
+  const remembered = await resolver.tryEnsure(root);
+  assert.equal(remembered.cache, "memory");
+  assert.equal(calls.length, 5);
+});
+
+test("tryEnsure remembers an unavailable repository instead of running commands again", async (t) => {
+  const { root, gitDir } = await createRepositoryFixture(t);
+  const calls = [];
+  const runner = async (command, args) => {
+    calls.push([command, ...args]);
+    if (command === "git") {
+      return { command, args, exitCode: 0, stdout: `${root}\n${gitDir}\n`, stderr: "" };
+    }
+    throw new CommandInvocationError(
+      command,
+      `Unable to execute ${command}: spawn ${command} ENOENT`,
+      "ENOENT",
+    );
+  };
+  const resolver = new GraphiteCapabilityResolver(runner);
+
+  assert.equal(await resolver.tryEnsure(root), undefined);
+  const attempted = calls.length;
+  assert.ok(attempted > 0);
+
+  assert.equal(await resolver.tryEnsure(root), undefined);
+  assert.equal(calls.length, attempted);
+
+  resolver.forget(root);
+  assert.equal(await resolver.tryEnsure(root), undefined);
+  assert.equal(calls.length, attempted * 2);
+});
+
+test("tryEnsure does not remember a cancelled detection", async (t) => {
+  const { root } = await createRepositoryFixture(t);
+  let attempts = 0;
+  const resolver = new GraphiteCapabilityResolver(async () => {
+    attempts += 1;
+    throw new CommandCancelledError("git");
+  });
+
+  assert.equal(await resolver.tryEnsure(root), undefined);
+  assert.equal(await resolver.tryEnsure(root), undefined);
+  assert.equal(attempts, 2);
+});
